@@ -125,9 +125,13 @@ resource "aws_iam_policy" "gha_read" {
         Resource = "*"
       },
       {
+        # DescribeTrails added after a live apply failure — the AWS
+        # provider's own read-back needs it in addition to the
+        # resource-specific Get* calls, same pattern as the S3 bucket's
+        # extra sub-config reads above.
         Sid      = "CloudTrailRead"
         Effect   = "Allow"
-        Action   = ["cloudtrail:GetTrail", "cloudtrail:GetTrailStatus", "cloudtrail:GetEventSelectors", "cloudtrail:ListTags"]
+        Action   = ["cloudtrail:GetTrail", "cloudtrail:GetTrailStatus", "cloudtrail:GetEventSelectors", "cloudtrail:ListTags", "cloudtrail:DescribeTrails"]
         Resource = local.cloudtrail_arn
       },
       {
