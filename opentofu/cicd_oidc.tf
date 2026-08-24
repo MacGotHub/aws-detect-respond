@@ -131,12 +131,22 @@ resource "aws_iam_policy" "gha_read" {
         Resource = local.cloudtrail_arn
       },
       {
+        # Full action list matches satellite-tracker's own already-proven
+        # set — the AWS provider's drift-detection refresh probes every one
+        # of these sub-configs on a bucket regardless of whether this
+        # project's own code ever sets them (Cors/Website/Accelerate/
+        # RequestPayment/Logging/Replication/ObjectLock), not just the ones
+        # main.tf explicitly configures. Confirmed live: GetBucketCors was
+        # missing from an earlier, narrower version of this list and the
+        # first real apply failed on it.
         Sid    = "S3BucketRead"
         Effect = "Allow"
         Action = [
           "s3:GetBucketPolicy", "s3:GetBucketPublicAccessBlock", "s3:GetBucketTagging",
-          "s3:GetBucketAcl", "s3:GetEncryptionConfiguration", "s3:GetBucketVersioning",
-          "s3:GetLifecycleConfiguration", "s3:ListBucket"
+          "s3:GetBucketAcl", "s3:GetEncryptionConfiguration", "s3:GetBucketCors",
+          "s3:GetBucketWebsite", "s3:GetBucketVersioning", "s3:GetAccelerateConfiguration",
+          "s3:GetBucketRequestPayment", "s3:GetBucketLogging", "s3:GetLifecycleConfiguration",
+          "s3:GetReplicationConfiguration", "s3:GetBucketObjectLockConfiguration", "s3:ListBucket"
         ]
         Resource = aws_s3_bucket.cloudtrail.arn
       },
@@ -227,6 +237,19 @@ resource "aws_iam_policy" "gha_write" {
         Effect   = "Allow"
         Action   = ["guardduty:CreateDetector", "guardduty:UpdateDetector", "guardduty:DeleteDetector", "guardduty:TagResource", "guardduty:UntagResource"]
         Resource = "*" # same resource-level limitation as GuardDutyRead above
+      },
+      {
+        # GuardDuty's first-ever CreateDetector call in an account needs
+        # to create its own service-linked role — confirmed live: the
+        # first real apply failed with "you do not have the required
+        # iam:CreateServiceLinkedRole permission" before this was added.
+        Sid      = "GuardDutyServiceLinkedRole"
+        Effect   = "Allow"
+        Action   = "iam:CreateServiceLinkedRole"
+        Resource = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/aws-service-role/guardduty.amazonaws.com/AWSServiceRoleForAmazonGuardDuty"
+        Condition = {
+          StringLike = { "iam:AWSServiceName" = "guardduty.amazonaws.com" }
+        }
       },
       {
         Sid      = "CloudTrailWrite"
