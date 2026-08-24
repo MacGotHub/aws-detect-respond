@@ -13,3 +13,4 @@
 # inline skip so far is either an enterprise control with a real monthly
 # cost (customer CMKs, code signing) or one that doesn't fit this
 # architecture (no untrusted contributors, no compliance mandate).
+skip-check: []
