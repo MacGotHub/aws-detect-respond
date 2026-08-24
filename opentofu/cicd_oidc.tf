@@ -75,12 +75,13 @@ resource "aws_iam_role" "gha_apply" {
 # -----------------------------------------------
 
 resource "aws_iam_policy" "gha_read" {
-  # checkov:skip=CKV_AWS_355: the GuardDutyRead statement below is the only
-  # Resource "*" in this policy on a "restrictable" action — GuardDuty's
-  # Get/List actions have no documented per-detector resource-level IAM
-  # support (unlike Lambda/SNS/EventBridge elsewhere in this policy, which
-  # all are scoped to a specific ARN), so "*" is the pragmatic ceiling
-  # here, not a shortcut taken instead of scoping.
+  # checkov:skip=CKV_AWS_355: two Resource "*" statements in this policy on
+  # "restrictable" actions — GuardDutyRead (GuardDuty's Get/List actions
+  # have no documented per-detector resource-level IAM support) and
+  # CloudTrailDescribe (DescribeTrails specifically doesn't support
+  # resource-level scoping at all, confirmed live: scoping it to the trail
+  # ARN still failed). Every other statement in this policy is scoped to a
+  # specific ARN; "*" here is a pragmatic ceiling, not a shortcut.
   name = "${local.name_prefix}-gha-read"
 
   policy = jsonencode({
@@ -125,14 +126,20 @@ resource "aws_iam_policy" "gha_read" {
         Resource = "*"
       },
       {
-        # DescribeTrails added after a live apply failure — the AWS
-        # provider's own read-back needs it in addition to the
-        # resource-specific Get* calls, same pattern as the S3 bucket's
-        # extra sub-config reads above.
         Sid      = "CloudTrailRead"
         Effect   = "Allow"
-        Action   = ["cloudtrail:GetTrail", "cloudtrail:GetTrailStatus", "cloudtrail:GetEventSelectors", "cloudtrail:ListTags", "cloudtrail:DescribeTrails"]
+        Action   = ["cloudtrail:GetTrail", "cloudtrail:GetTrailStatus", "cloudtrail:GetEventSelectors", "cloudtrail:ListTags"]
         Resource = local.cloudtrail_arn
+      },
+      {
+        # DescribeTrails, unlike the Get*/ListTags actions above, doesn't
+        # support resource-level scoping at all — confirmed live: scoping
+        # it to the trail ARN still failed with the identical
+        # AccessDenied, same constraint as logs:DescribeLogGroups below.
+        Sid      = "CloudTrailDescribe"
+        Effect   = "Allow"
+        Action   = "cloudtrail:DescribeTrails"
+        Resource = "*"
       },
       {
         # Full action list matches satellite-tracker's own already-proven
