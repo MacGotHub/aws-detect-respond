@@ -79,13 +79,15 @@ GitHub IDs, not a name match.
         │                                          │
         │           ┌─────────────────────────┐    │
         │           │  CloudTrail management   │    │
-        │           │  events already flow to  │    │
-        │           │  the default bus WITHOUT │    │
-        │           │  a custom Trail — a Trail│    │
-        │           │  is created anyway for a │    │
-        │           │  durable S3 audit log,   │    │
-        │           │  not because EventBridge  │    │
-        │           │  needs it                │    │
+        │           │  events — VERIFIED this  │    │
+        │           │  requires an active Trail│    │
+        │           │  to reach EventBridge at │    │
+        │           │  all (not automatic the  │    │
+        │           │  way GuardDuty findings  │    │
+        │           │  are) — the Trail below  │    │
+        │           │  is load-bearing for this│    │
+        │           │  path, not just an audit │    │
+        │           │  log on the side         │    │
         │           └────────────┬─────────────┘    │
         │                        │ rule matching     │
         │                        │ specific event    │
@@ -114,12 +116,31 @@ GitHub IDs, not a name match.
 - `aws_guardduty_detector` — enable GuardDuty on the account. Default
   finding-publishing frequency; revisit if alert latency matters more than
   the default 6-hour/15-minute tiers once this is actually running.
-- `aws_cloudtrail` trail + a dedicated S3 bucket for log delivery
-  (encrypted, lifecycle policy — same posture as `satellite-tracker`'s
-  `tle_archive` bucket). Not strictly required for EventBridge delivery of
-  most management events (see topology diagram), but a durable, queryable
-  audit log is a real part of "detection and response," and it's cheap
-  (S3 storage only, no compute).
+- `aws_cloudtrail` trail (multi-region, log file validation on) + a
+  dedicated S3 bucket for log delivery (encrypted, 1-year lifecycle,
+  `aws:SourceArn`-scoped bucket policy per AWS's current documented best
+  practice — see below). **Verified, not assumed:** CloudTrail management
+  events only reach EventBridge's default bus when an active Trail is
+  logging them (confirmed against AWS's own EventBridge docs before
+  writing this) — unlike GuardDuty findings, which land on the bus
+  automatically the moment a detector exists. So the Trail here is
+  load-bearing for the CloudTrail-sourced detection rule below, not just a
+  nice-to-have audit log on the side (though it's also a real, durable,
+  queryable audit log — a genuine part of "detection and response," and
+  cheap: S3 storage only, no compute).
+  - The bucket policy needs the trail's ARN in an `aws:SourceArn`
+    condition, but the trail can't be created until the bucket policy
+    already exists — the trail's ARN is fully predictable from known
+    values (region, account ID, and a name this project chooses, not
+    something AWS assigns), so it's built as a plain string in `locals.tf`
+    rather than referencing `aws_cloudtrail.this.arn`, which would create
+    a real circular dependency. `depends_on` forces the ordering the
+    string trick alone doesn't guarantee.
+  - Console sign-in events (`ConsoleLogin`) are a separate `source`/
+    `detail-type` pair (`aws.signin` / "AWS Console Sign In via
+    CloudTrail") from general API calls (`aws.cloudtrail` / "AWS API Call
+    via CloudTrail") — verified against AWS's EventBridge reference before
+    writing the rule, not assumed to be the same shape.
 - EventBridge rule(s): one matching GuardDuty findings
   (`source: ["aws.guardduty"]`), one matching a deliberately small starting
   set of high-value CloudTrail event names via the default bus — root

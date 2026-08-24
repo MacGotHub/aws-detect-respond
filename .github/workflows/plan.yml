@@ -1,0 +1,72 @@
+name: Plan
+
+# Only run when a PR actually touches something that affects the deploy —
+# same reasoning as satellite-tracker's plan.yml.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "opentofu/**"
+      - "src/**"
+      - ".github/workflows/plan.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Static IaC scan — gates the plan on insecure resource configuration
+      # before any AWS credentials are even requested. Accepted-risk
+      # findings live in .checkov.yaml.
+      - name: Checkov IaC scan
+        uses: bridgecrewio/checkov-action@v12.3114.0
+        with:
+          directory: opentofu
+          config_file: .checkov.yaml
+          framework: terraform
+          output_format: cli
+          compact: true
+          quiet: true
+
+      # Exchanges GitHub's OIDC token for temporary AWS credentials by
+      # assuming detect-respond-gha-plan — read-only, repo-scoped. No AWS
+      # keys anywhere in this repo's secrets.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::351668480009:role/detect-respond-gha-plan
+          aws-region: us-east-1
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.11.5"
+
+      - name: tofu init
+        working-directory: opentofu
+        run: tofu init
+
+      # Writes the human-readable plan into the job summary tab instead of
+      # posting a PR comment — one less permission (no pull-requests: write)
+      # for a first pass, same as satellite-tracker.
+      # set -o pipefail: without it, `tofu plan | tee` reports tee's exit
+      # code (always 0), so a genuinely broken plan would still show green.
+      - name: tofu plan
+        working-directory: opentofu
+        shell: bash
+        run: |
+          set -o pipefail
+          tofu plan -no-color -input=false | tee plan.txt
+          {
+            echo '## tofu plan'
+            echo '```'
+            cat plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

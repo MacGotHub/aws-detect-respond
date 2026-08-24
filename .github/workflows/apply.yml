@@ -1,0 +1,71 @@
+name: Apply
+
+# Fires after a merge lands on main — this is the only trigger that can
+# produce the OIDC sub claim detect-respond-gha-apply's trust policy
+# requires (repo:MacGotHub@188585672/aws-detect-respond@1344321220:ref:refs/heads/main).
+on:
+  push:
+    branches: [main]
+    paths:
+      - "opentofu/**"
+      - "src/**"
+      - ".github/workflows/apply.yml"
+
+permissions:
+  id-token: write
+  contents: read
+
+# Applies never overlap or get cancelled mid-flight — queue instead, so two
+# rapid merges to main can't race each other against the same state file.
+concurrency:
+  group: detect-respond-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same scan as plan.yml, run again here so a direct push to main
+      # (bypassing a PR) can't apply an insecure change unreviewed.
+      - name: Checkov IaC scan
+        uses: bridgecrewio/checkov-action@v12.3114.0
+        with:
+          directory: opentofu
+          config_file: .checkov.yaml
+          framework: terraform
+          output_format: cli
+          compact: true
+          quiet: true
+
+      # Assumes detect-respond-gha-apply — the one role with write
+      # permissions, only reachable because this run's OIDC token proves
+      # ref = main.
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::351668480009:role/detect-respond-gha-apply
+          aws-region: us-east-1
+
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.11.5"
+
+      - name: tofu init
+        working-directory: opentofu
+        run: tofu init
+
+      # set -o pipefail: an apply that fails partway through must show as
+      # failed, not silently green from tee's exit code.
+      - name: tofu apply
+        working-directory: opentofu
+        shell: bash
+        run: |
+          set -o pipefail
+          tofu apply -no-color -input=false -auto-approve | tee apply.txt
+          {
+            echo '## tofu apply'
+            echo '```'
+            cat apply.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

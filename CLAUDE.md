@@ -62,28 +62,39 @@ aws-detect-respond/
 ├── README.md                  # Short pitch + pointers here ✓
 ├── CLAUDE.md                  # This file ✓
 ├── DESIGN.md                  # Architecture rationale ✓
-├── opentofu/                  # All IaC (TODO — not created yet)
-│   ├── backend.tf             # Remote state — reuse the shared
-│   │                          #   351668480009-opentofu-state bucket,
-│   │                          #   new key (e.g. detect-respond/pipeline)
-│   ├── providers.tf
-│   ├── main.tf                # GuardDuty detector, CloudTrail trail, EventBridge rules
-│   ├── locals.tf
-│   ├── lambda_alert.tf        # Alert-processing Lambda + IAM
-│   ├── cicd_oidc.tf           # New repo-scoped IAM roles ONLY — the GitHub
-│   │                          #   OIDC provider itself already exists in this
-│   │                          #   account (created by satellite-tracker's
-│   │                          #   Phase 5); reference it as a data source,
-│   │                          #   do not create a second one for the same URL
-│   └── outputs.tf
-├── src/                       # Lambda source (Python) — TODO, not created yet
-│   └── alert/                 # Parses GuardDuty findings / CloudTrail events, publishes to SNS
-├── tests/                     # pytest unit tests — TODO
+├── .checkov.yaml              # Repo-wide Checkov config — no skips yet, see the file itself ✓
+├── .gitattributes             # * text=auto eol=lf, same as satellite-tracker ✓
+├── .gitignore ✓
+├── pytest.ini ✓
+├── opentofu/                  # All IaC ✓
+│   ├── backend.tf             # Remote state — shared 351668480009-opentofu-state
+│   │                          #   bucket, key detect-respond/pipeline/terraform.tfstate ✓
+│   ├── providers.tf ✓
+│   ├── locals.tf              # name_prefix, common_tags, watched event names,
+│   │                          #   the hand-built cloudtrail/OIDC-provider ARN strings ✓
+│   ├── main.tf                # GuardDuty detector, CloudTrail bucket+policy+trail, SNS topic ✓
+│   ├── lambda_alert.tf        # Alert-processing Lambda + IAM ✓
+│   ├── eventbridge.tf         # Rules + targets + Lambda permissions ✓
+│   ├── cicd_oidc.tf           # Phase 2, pulled forward — new repo-scoped IAM roles
+│   │                          #   ONLY; the GitHub OIDC provider itself already
+│   │                          #   exists in this account (satellite-tracker's Phase
+│   │                          #   5) and is referenced as a hardcoded ARN string,
+│   │                          #   not a data source or a second provider resource ✓
+│   └── outputs.tf ✓
+├── src/
+│   └── alert/handler.py       # Parses GuardDuty findings / CloudTrail events, publishes to SNS ✓
+├── tests/
+│   └── test_alert.py          # pytest + moto (SNS→SQS subscription, same pattern
+│                               #   satellite-tracker's alerts tests use) ✓
 └── .github/
-    └── workflows/             # plan/apply pipelines — TODO
+    └── workflows/
+        ├── plan.yml ✓
+        └── apply.yml ✓
 ```
 
-Do not create TODO directories until their phase actually starts.
+All of Phase 1 and Phase 2 exist as code as of 2026-08-23 but have **not
+been applied/verified yet** — see Current Status below for exactly why and
+what's still outstanding before trusting any of this is actually live.
 
 ---
 
@@ -91,31 +102,31 @@ Do not create TODO directories until their phase actually starts.
 
 ```
 GuardDuty (threat detection: compromised creds, unusual API calls, etc.)
-    ↓ (finding events, default EventBridge bus)
-CloudTrail (management events — most already flow to the default
-    EventBridge bus without a custom Trail; a Trail is still created for
-    its own durable S3-backed audit log, not because EventBridge needs it)
+    ↓ (finding events land on the default EventBridge bus automatically —
+    ↓  no CloudTrail/Trail involvement needed for this path)
+CloudTrail trail (VERIFIED, not assumed: CloudTrail-sourced events only
+    reach EventBridge when an active Trail is logging them — this Trail is
+    load-bearing for the path below, not just a nice-to-have audit log)
     ↓
-EventBridge rules (GuardDuty findings + specific high-value CloudTrail
-    events: root login, CreateAccessKey, admin-policy attachment,
-    StopLogging/DeleteTrail, etc.)
+EventBridge rules (GuardDuty findings + a watchlist of event names:
+    ConsoleLogin, CreateAccessKey, AttachUserPolicy/PutUserPolicy,
+    StopLogging/DeleteTrail/DeleteDetector — two source/detail-type pairs,
+    since console sign-in is shaped differently from a general API call)
     ↓
-Lambda (parse, classify severity, format human-readable message)
+Lambda (parse whichever shape it received, format human-readable message)
     ↓
 SNS topic → email (Phase 1); Slack webhook and/or safe auto-remediation
     actions are later phases, not Phase 1
 ```
 
-### Phases (initial scoping — refine as work starts)
+### Phases
 
-| Phase | Scope |
-|---|---|
-| 1 — Foundation & alerting | Enable GuardDuty, create a CloudTrail trail, EventBridge rules on GuardDuty findings + a small set of high-value CloudTrail events, one Lambda that formats and publishes to SNS (email). No auto-remediation. |
-| 2 — CI/CD | GitHub Actions + OIDC (reusing the existing provider, new repo-scoped roles), Checkov gate — matching `satellite-tracker`'s Phase 5 exactly. |
-| 3 — Dashboarding | CloudWatch dashboard summarizing findings over time (counts by severity/type). |
-| 4 — Safe auto-remediation | Only for extremely high-confidence, low-blast-radius actions (e.g. disabling an access key GuardDuty explicitly flagged as compromised) — deliberately conservative; alerting-only is the safe default until specific remediation actions are individually reasoned through. |
-
-Estimates intentionally not pre-committed yet — this project hasn't started building, unlike `satellite-tracker`'s CLAUDE.md which carried real evening/weekend estimates from day one.
+| Phase | Scope | Status |
+|---|---|---|
+| 1 — Foundation & alerting | GuardDuty detector, CloudTrail trail, EventBridge rules on GuardDuty findings + a watched-event-name list, one Lambda → SNS (email). No auto-remediation. | Code written 2026-08-23; not yet applied — see Current Status |
+| 2 — CI/CD | GitHub Actions + OIDC (reusing the existing provider via hardcoded ARN, new repo-scoped roles), Checkov gate. | Pulled forward ahead of Phase 1 being live — see Current Status for why; code written 2026-08-23, not yet run |
+| 3 — Dashboarding | CloudWatch dashboard summarizing findings over time (counts by severity/type). | Not started — needs Phase 1 actually producing findings first |
+| 4 — Safe auto-remediation | Only for extremely high-confidence, low-blast-radius actions — deliberately conservative; alerting-only is the safe default until specific remediation actions are individually reasoned through. | Not started, not designed in detail on purpose |
 
 ---
 
@@ -167,9 +178,50 @@ Same conventions as `satellite-tracker` (same owner, same bar):
 - Confirmed via live AWS CLI check (2026-08-23): this account currently has
   **no GuardDuty detector and no CloudTrail trail** — genuinely starting
   from zero on both, not assuming.
+- Phase 1 (GuardDuty, CloudTrail bucket+policy+trail, SNS topic, alert
+  Lambda + IAM, EventBridge rules) and Phase 2 (CI/CD: OIDC roles,
+  `.checkov.yaml`, `plan.yml`/`apply.yml`) written 2026-08-23, all as a
+  single batch, pushed to a PR.
+- `pytest tests/` passes locally (4 tests: GuardDuty finding formatting,
+  watched-event formatting, root-login's no-`arn`-key shape, subject
+  truncation) — run via moto's SNS→SQS subscription pattern (same as
+  `satellite-tracker`'s alerts tests) to assert actual delivered message
+  content, not just a status code.
+- Two things verified live against real AWS docs before writing any of
+  this, specifically because they'd have been silent, hard-to-debug bugs
+  if guessed wrong: (1) CloudTrail-sourced events require an active Trail
+  to reach EventBridge at all — GuardDuty findings do not; (2) console
+  sign-in events use a different `source`/`detail-type` pair
+  (`aws.signin` / "AWS Console Sign In via CloudTrail") than general API
+  calls (`aws.cloudtrail` / "AWS API Call via CloudTrail").
+- The current CloudTrail S3 bucket policy shape (with the `aws:SourceArn`
+  condition) was pulled from AWS's own current docs, not memory — AWS has
+  tightened this policy's recommended shape over time.
 
-### Not Started
-- Everything else. Phase 1 has not been built.
+### Not Yet Verified — read before assuming any of this is live
+**Local `tofu` is blocked in this environment** (endpoint security
+"Application Control policy has blocked this file" — same class of issue
+`satellite-tracker` sessions hit, logged in that project's own memory).
+Unlike `satellite-tracker`, this repo had no existing CI/CD to fall back
+on, so Phase 2 was pulled forward and built *before* Phase 1 had ever been
+applied or plan-validated by anything. Concretely, as of the code being
+pushed:
+- **No `tofu plan`/`validate` has run against this configuration at all**
+  — not locally (blocked), not in CI (first PR not opened/merged yet).
+  Everything in `opentofu/` is hand-written and reviewed, not yet
+  machine-checked.
+- The IAM read/write policies in `cicd_oidc.tf` are a first-pass guess at
+  the exact AWS actions needed, written without the benefit of any real
+  plan/apply attempt. `satellite-tracker`'s own Phase 5 needed ~10
+  iterations against real `AccessDenied` errors to get its (larger, more
+  mature) policy set right — expect a similar "AccessDenied" round or two
+  here once `apply.yml` actually runs, especially around GuardDuty (its
+  resource-level IAM support is uncertain enough that both read and write
+  statements use `Resource = "*"` rather than a guessed-narrow ARN).
+- Whether the CloudTrail bucket-policy-before-trail `depends_on` ordering
+  in `main.tf` actually satisfies AWS's validation-at-trail-creation-time
+  requirement is reasoned through, not proven — first real place to look
+  if `apply.yml`'s `tofu apply` fails on `aws_cloudtrail.this`.
 
 ### Owner Prerequisites (not build tasks)
 - GitHub repo `MacGotHub/aws-detect-respond` — done, created 2026-08-23
@@ -178,8 +230,6 @@ Same conventions as `satellite-tracker` (same owner, same bar):
   precedent before assuming it applies to future projects too)
 
 ### Known Dependencies
-- Phase 2 (CI/CD) needs Phase 1's resources to exist first (nothing to
-  plan/apply otherwise)
 - Phase 3 (dashboarding) needs Phase 1's findings actually flowing before a
   dashboard has anything to show
 - Phase 4 (auto-remediation) is deliberately sequenced last and should be
