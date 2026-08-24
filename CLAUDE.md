@@ -158,8 +158,10 @@ Same conventions as `satellite-tracker` (same owner, same bar):
   alerts a human. Default to alert-only.
 - Do not create a second GitHub OIDC identity provider in this account —
   `satellite-tracker`'s Phase 5 already registered one for
-  `token.actions.githubusercontent.com`; reference it as a data source and
-  create only new repo-scoped IAM roles here.
+  `token.actions.githubusercontent.com`; reference its ARN as a hardcoded
+  string (`locals.github_oidc_provider_arn` — predictable, not looked up
+  via a data source, to avoid a first-apply data-source-timing problem)
+  and create only new repo-scoped IAM roles here.
 - Do not use static long-lived AWS access keys in GitHub secrets — OIDC role
   assumption only, matching every other project this owner maintains.
 - Do not switch IaC tools — OpenTofu only.
@@ -198,30 +200,57 @@ Same conventions as `satellite-tracker` (same owner, same bar):
   condition) was pulled from AWS's own current docs, not memory — AWS has
   tightened this policy's recommended shape over time.
 
-### Not Yet Verified — read before assuming any of this is live
-**Local `tofu` is blocked in this environment** (endpoint security
-"Application Control policy has blocked this file" — same class of issue
-`satellite-tracker` sessions hit, logged in that project's own memory).
-Unlike `satellite-tracker`, this repo had no existing CI/CD to fall back
-on, so Phase 2 was pulled forward and built *before* Phase 1 had ever been
-applied or plan-validated by anything. Concretely, as of the code being
-pushed:
-- **No `tofu plan`/`validate` has run against this configuration at all**
-  — not locally (blocked), not in CI (first PR not opened/merged yet).
-  Everything in `opentofu/` is hand-written and reviewed, not yet
-  machine-checked.
-- The IAM read/write policies in `cicd_oidc.tf` are a first-pass guess at
-  the exact AWS actions needed, written without the benefit of any real
-  plan/apply attempt. `satellite-tracker`'s own Phase 5 needed ~10
-  iterations against real `AccessDenied` errors to get its (larger, more
-  mature) policy set right — expect a similar "AccessDenied" round or two
-  here once `apply.yml` actually runs, especially around GuardDuty (its
-  resource-level IAM support is uncertain enough that both read and write
-  statements use `Resource = "*"` rather than a guessed-narrow ARN).
-- Whether the CloudTrail bucket-policy-before-trail `depends_on` ordering
-  in `main.tf` actually satisfies AWS's validation-at-trail-creation-time
-  requirement is reasoned through, not proven — first real place to look
-  if `apply.yml`'s `tofu apply` fails on `aws_cloudtrail.this`.
+### Phase 1 + Phase 2 — deployed and verified live, 2026-08-24
+Local `tofu` was blocked the entire time (endpoint security "Application
+Control policy has blocked this file" — same class of issue logged in
+`satellite-tracker`'s own memory), so every step from first plan through
+final apply went through GitHub Actions/OIDC, with a real
+"AccessDenied afternoon" along the way — expected, per `satellite-tracker`'s
+own Phase 5 precedent, not a sign anything was wrong.
+
+**The chicken-and-egg bootstrap problem, solved:** `detect-respond-gha-plan`/
+`-apply` didn't exist yet, so CI couldn't assume a role that doesn't exist
+to create that very role — no existing pipeline to fall back on the way
+`satellite-tracker` sessions could. Fixed by creating the 2 roles + 2
+policies + 3 attachments directly via AWS CLI (matching the `.tf` exactly),
+then a one-time `bootstrap-import.yml` workflow (`workflow_dispatch` only,
+deleted after use — see git history if it's ever needed again) imported
+them into state so the real `apply.yml` reconciled cleanly.
+
+**Real gaps found and fixed against live `AccessDenied` errors** (not
+guessed preemptively — each one only surfaced once the resource ahead of
+it in the graph actually got created):
+- `iam:CreateServiceLinkedRole` — GuardDuty's first-ever `CreateDetector`
+  in an account needs to create its own service-linked role.
+- The AWS provider's own drift-detection read-back on the S3 bucket needed
+  several more sub-config `Get*` actions (CORS, website, accelerate,
+  request-payment, logging, replication, object-lock) than the resources
+  this project's own code actually configures — same shape as
+  `satellite-tracker`'s own already-proven S3BucketRead list, reused
+  wholesale instead of rediscovering each one.
+- `cloudtrail:DescribeTrails` needed `Resource = "*"` — confirmed live that
+  scoping it to the trail ARN still failed; it doesn't support
+  resource-level scoping at all, same constraint as `logs:DescribeLogGroups`.
+- Both the S3 bucket and the CloudTrail trail got marked "tainted" after a
+  read-after-write step failed on each (fixed by the gaps above) — resolved
+  with `tofu untaint` for the bucket specifically (to avoid granting
+  `s3:DeleteBucket` to the ongoing CI role just to route around a
+  since-fixed transient failure); the trail's replace went through cleanly
+  since `cloudtrail:DeleteTrail` was already granted from the start.
+
+**Verified live, end-to-end, after the apply succeeded** — not just "the
+apply exited 0": `aws guardduty list-detectors` shows an active detector,
+`aws cloudtrail get-trail-status` confirms `detect-respond-trail` is
+actively logging (multi-region), both EventBridge rules show `ENABLED`,
+and `aws lambda invoke` with a synthetic GuardDuty-Finding-shaped payload
+against the real deployed `detect-respond-alert` function returned
+`{"published": true}`.
+
+**Still outstanding:** no email subscription on the SNS topic yet (owner
+task, out-of-band, same pattern as `satellite-tracker`'s `alerts.tf`:
+`aws sns subscribe --topic-arn <alerts_topic_arn output> --protocol email
+--notification-endpoint <address>`) — until that's added, alerts publish
+successfully but have nowhere to actually land.
 
 ### Owner Prerequisites (not build tasks)
 - GitHub repo `MacGotHub/aws-detect-respond` — done, created 2026-08-23
