@@ -35,19 +35,31 @@ jobs:
         working-directory: opentofu
         run: tofu init
 
-      # -input=false: nothing here should ever prompt. Each import is
-      # independent; a resource already in state (e.g. a retry after a
-      # partial failure) errors harmlessly rather than corrupting anything.
-      - name: Import bootstrap IAM resources
+      # Ran once already (2026-08-24) and succeeded — all 7 bootstrap
+      # resources are confirmed in state (verified via the plan step
+      # below: 0 changes on any of them). Left as a comment, not deleted
+      # outright, so the exact commands are on record in case state is
+      # ever lost and this needs redoing:
+      #   tofu import -input=false aws_iam_role.gha_plan detect-respond-gha-plan
+      #   tofu import -input=false aws_iam_role.gha_apply detect-respond-gha-apply
+      #   tofu import -input=false aws_iam_policy.gha_read arn:aws:iam::351668480009:policy/detect-respond-gha-read
+      #   tofu import -input=false aws_iam_policy.gha_write arn:aws:iam::351668480009:policy/detect-respond-gha-write
+      #   tofu import -input=false aws_iam_role_policy_attachment.gha_plan_read detect-respond-gha-plan/arn:aws:iam::351668480009:policy/detect-respond-gha-read
+      #   tofu import -input=false aws_iam_role_policy_attachment.gha_apply_read detect-respond-gha-apply/arn:aws:iam::351668480009:policy/detect-respond-gha-read
+      #   tofu import -input=false aws_iam_role_policy_attachment.gha_apply_write detect-respond-gha-apply/arn:aws:iam::351668480009:policy/detect-respond-gha-write
+
+      # A prior apply attempt's aws_s3_bucket.cloudtrail create succeeded,
+      # but a subsequent read-after-write on the same resource failed
+      # (missing s3:GetBucketCors at the time — since fixed), so OpenTofu
+      # marked it tainted: "not confident this is in a known-good state,
+      # destroy and recreate next time." Untainting instead of granting
+      # s3:DeleteBucket to the CI role — a real, permanent permission
+      # increase on this project's own audit-log bucket — just to work
+      # around a since-fixed transient failure isn't the right tradeoff.
+      # `|| true`: harmless if the resource isn't (or is no longer) tainted.
+      - name: Untaint aws_s3_bucket.cloudtrail if needed
         working-directory: opentofu
-        run: |
-          tofu import -input=false aws_iam_role.gha_plan detect-respond-gha-plan
-          tofu import -input=false aws_iam_role.gha_apply detect-respond-gha-apply
-          tofu import -input=false aws_iam_policy.gha_read arn:aws:iam::351668480009:policy/detect-respond-gha-read
-          tofu import -input=false aws_iam_policy.gha_write arn:aws:iam::351668480009:policy/detect-respond-gha-write
-          tofu import -input=false aws_iam_role_policy_attachment.gha_plan_read detect-respond-gha-plan/arn:aws:iam::351668480009:policy/detect-respond-gha-read
-          tofu import -input=false aws_iam_role_policy_attachment.gha_apply_read detect-respond-gha-apply/arn:aws:iam::351668480009:policy/detect-respond-gha-read
-          tofu import -input=false aws_iam_role_policy_attachment.gha_apply_write detect-respond-gha-apply/arn:aws:iam::351668480009:policy/detect-respond-gha-write
+        run: tofu untaint aws_s3_bucket.cloudtrail || true
 
       - name: tofu plan (verify 0 changes on the imported resources)
         working-directory: opentofu
