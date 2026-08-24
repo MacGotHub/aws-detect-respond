@@ -15,6 +15,16 @@
 # -----------------------------------------------
 
 resource "aws_iam_role" "gha_plan" {
+  # checkov:skip=CKV_AWS_393: false positive, traced through Checkov's own
+  # check source (GithubActionsOIDCTrustPolicyOnRole.py) before accepting
+  # this — its gh_repo_regex expects a plain "owner/repo" shape and doesn't
+  # recognize GitHub's newer immutable-numeric-ID sub claim format
+  # ("owner@ownerid/repo@repoid") this trust policy uses. That format is
+  # what GitHub actually sends for this repo (confirmed via `gh api`, same
+  # as satellite-tracker's own Phase 5 discovery) and is strictly tighter
+  # than a plain name match, not looser — it survives a repo rename and
+  # can't be produced by a differently-named repo. The regex gap is
+  # Checkov's, not a real weakening of this policy.
   name = "${local.name_prefix}-gha-plan"
 
   assume_role_policy = jsonencode({
@@ -39,6 +49,8 @@ resource "aws_iam_role" "gha_plan" {
 # here would let a PR from a fork assume a role that can change live
 # infrastructure.
 resource "aws_iam_role" "gha_apply" {
+  # checkov:skip=CKV_AWS_393: same Checkov regex gap as gha_plan above —
+  # see that resource's comment.
   name = "${local.name_prefix}-gha-apply"
 
   assume_role_policy = jsonencode({
@@ -63,6 +75,12 @@ resource "aws_iam_role" "gha_apply" {
 # -----------------------------------------------
 
 resource "aws_iam_policy" "gha_read" {
+  # checkov:skip=CKV_AWS_355: the GuardDutyRead statement below is the only
+  # Resource "*" in this policy on a "restrictable" action — GuardDuty's
+  # Get/List actions have no documented per-detector resource-level IAM
+  # support (unlike Lambda/SNS/EventBridge elsewhere in this policy, which
+  # all are scoped to a specific ARN), so "*" is the pragmatic ceiling
+  # here, not a shortcut taken instead of scoping.
   name = "${local.name_prefix}-gha-read"
 
   policy = jsonencode({
@@ -185,6 +203,14 @@ resource "aws_iam_role_policy_attachment" "gha_apply_read" {
 # -----------------------------------------------
 
 resource "aws_iam_policy" "gha_write" {
+  # checkov:skip=CKV_AWS_355: same GuardDuty resource-level-IAM limitation
+  # as gha_read above — CreateDetector in particular has no pre-existing
+  # resource to scope to at all (it's the create call), so "*" is the only
+  # option for that action regardless of how the rest are scoped.
+  # checkov:skip=CKV_AWS_290: same root cause — this flags the GuardDutyWrite
+  # statement's unconstrained "*" on Create/Update/Delete/Tag/Untag; every
+  # other write statement in this policy is scoped to a specific resource
+  # ARN pattern (Lambda, SNS, IAM roles/policies, EventBridge, Logs).
   name = "${local.name_prefix}-gha-write"
 
   policy = jsonencode({

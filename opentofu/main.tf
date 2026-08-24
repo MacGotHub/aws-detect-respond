@@ -3,6 +3,11 @@
 # -----------------------------------------------
 
 resource "aws_guardduty_detector" "this" {
+  # checkov:skip=CKV2_AWS_3: org/region-wide GuardDuty auto-enablement is an
+  # AWS Organizations feature (delegated admin + member-account
+  # auto-enable) — this is a single personal account, not an Organization,
+  # so a standalone detector is the correct shape, not a lesser version of
+  # the org-wide one.
   enable = true
 
   tags = {
@@ -25,6 +30,10 @@ resource "aws_s3_bucket" "cloudtrail" {
   # satellite-tracker made for its own buckets.
   # checkov:skip=CKV_AWS_21: versioning — CloudTrail never overwrites an
   # existing log object, so there's nothing to version-protect against.
+  # checkov:skip=CKV2_AWS_62: event notifications — no downstream consumer
+  # subscribes to bucket events; this project reads CloudTrail activity via
+  # EventBridge, not S3 events. Same accepted posture as satellite-tracker's
+  # tle_archive bucket.
   bucket = "${local.name_prefix}-cloudtrail-${data.aws_caller_identity.current.account_id}"
 
   tags = {
@@ -70,6 +79,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "cloudtrail" {
 
     expiration {
       days = 365
+    }
+
+    # Real fix, not an accepted-risk skip: an abandoned multipart upload
+    # (e.g. an interrupted large PutObject) otherwise sits billed forever
+    # with no automatic cleanup — this has no tradeoff worth documenting,
+    # unlike the skips above.
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
     }
   }
 }
@@ -123,6 +140,14 @@ resource "aws_cloudtrail" "this" {
   # checkov:skip=CKV_AWS_35: CloudTrail's own logs encrypted with a
   # customer-managed CMK — AWS-managed S3 encryption (above) already
   # applies; same cost-conscious call as everywhere else in this project.
+  # checkov:skip=CKV2_AWS_10: CloudWatch Logs integration would add a
+  # second delivery path (new log group + IAM role for CloudTrail to
+  # assume) mainly useful for ad-hoc Logs Insights queries over historical
+  # events — EventBridge (this project's actual real-time detection path)
+  # and the S3 archive (durable audit log) already cover Phase 1's real
+  # need. Revisit if Phase 3's dashboarding turns out to want Logs Insights
+  # specifically rather than CloudWatch metrics/alarms off the alert
+  # Lambda's own logs.
   name                          = local.cloudtrail_name
   s3_bucket_name                = aws_s3_bucket.cloudtrail.id
   include_global_service_events = true
