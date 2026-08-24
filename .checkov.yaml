@@ -1,0 +1,16 @@
+# Checkov config for the aws-detect-respond OpenTofu code. Run from CI via
+# .github/workflows/plan.yml and apply.yml (bridgecrewio/checkov-action).
+#
+# No repo-wide skips yet — this project has exactly one Lambda and one S3
+# bucket as of Phase 1, so there's nothing "recurring identically across
+# many resources" the way satellite-tracker's own .checkov.yaml describes.
+# Accepted-risk findings live as inline `checkov:skip` comments next to the
+# specific resource they apply to (main.tf, lambda_alert.tf) instead —
+# revisit and consolidate here if/when a check needs skipping on more than
+# one or two resources.
+#
+# This is a $0-marginal-cost personal project (see CLAUDE.md) — every
+# inline skip so far is either an enterprise control with a real monthly
+# cost (customer CMKs, code signing) or one that doesn't fit this
+# architecture (no untrusted contributors, no compliance mandate).
+skip-check: []
