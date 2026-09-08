@@ -4,69 +4,47 @@
 #
 # No static AWS keys in GitHub secrets. GitHub Actions presents a
 # short-lived signed OIDC token; AWS trades it for temporary STS
-# credentials scoped to one of the two roles below. Two roles, not one, so
-# a PR from any branch can only ever get read-only access — write access
-# requires the token to additionally prove `ref = refs/heads/main`, which
-# only a push to main (post-merge) can produce. Same shape as
-# satellite-tracker's Phase 5, single read/write policy pair rather than
-# that project's later bootstrap-policy split — this is a first-ever
-# apply with no already-live permissions to avoid regressing, so there's
-# no equivalent problem to design around yet.
+# credentials scoped to one of two roles: a read-only plan role any ref/PR
+# can assume, and a read-write apply role only a push to main can assume.
+#
+# The trust-boundary roles now come from the shared oidc-cicd module
+# (app.terraform.io/macgothub/oidc-cicd/aws) — the read/write split, the
+# branch pin, and the OIDC plumbing were identical across three sibling
+# repos. This file keeps only the project-specific permission policies
+# bolted onto the module's roles; the module deliberately attaches none.
+#
+# The OIDC provider itself is not created here — satellite-tracker's Phase
+# 5 already registered token.actions.githubusercontent.com in this account
+# (providers are keyed by URL, not repo), so the module reuses it via
+# existing_oidc_provider_arn. github_subject_prefix_override carries
+# GitHub's immutable numeric-ID sub claim form (see locals.tf).
 # -----------------------------------------------
 
-resource "aws_iam_role" "gha_plan" {
-  # checkov:skip=CKV_AWS_393: false positive, traced through Checkov's own
-  # check source (GithubActionsOIDCTrustPolicyOnRole.py) before accepting
-  # this — its gh_repo_regex expects a plain "owner/repo" shape and doesn't
-  # recognize GitHub's newer immutable-numeric-ID sub claim format
-  # ("owner@ownerid/repo@repoid") this trust policy uses. That format is
-  # what GitHub actually sends for this repo (confirmed via `gh api`, same
-  # as satellite-tracker's own Phase 5 discovery) and is strictly tighter
-  # than a plain name match, not looser — it survives a repo rename and
-  # can't be produced by a differently-named repo. The regex gap is
-  # Checkov's, not a real weakening of this policy.
-  name = "${local.name_prefix}-gha-plan"
+module "cicd" {
+  source  = "app.terraform.io/macgothub/oidc-cicd/aws"
+  version = "~> 0.2"
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Federated = local.github_oidc_provider_arn }
-      Action    = "sts:AssumeRoleWithWebIdentity"
-      Condition = {
-        StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-        }
-        StringLike = {
-          "token.actions.githubusercontent.com:sub" = "${local.github_oidc_sub_prefix}:*"
-        }
-      }
-    }]
-  })
+  name_prefix = local.name_prefix
+
+  create_oidc_provider           = false
+  existing_oidc_provider_arn     = local.github_oidc_provider_arn
+  github_subject_prefix_override = local.github_oidc_sub_prefix
+
+  # No tags argument: provider default_tags already applies common_tags to
+  # every resource in this project, these roles included.
 }
 
-# Pinned to exactly one ref (no wildcard in the ref segment) — a wildcard
-# here would let a PR from a fork assume a role that can change live
-# infrastructure.
-resource "aws_iam_role" "gha_apply" {
-  # checkov:skip=CKV_AWS_393: same Checkov regex gap as gha_plan above —
-  # see that resource's comment.
-  name = "${local.name_prefix}-gha-apply"
+# The roles pre-exist in state (bootstrap-imported 2026-08-24). Their names
+# and trust policies are byte-identical to what the module generates, so
+# these are pure state address changes -- no resource replacement.
+moved {
+  from = aws_iam_role.gha_plan
+  to   = module.cicd.aws_iam_role.plan
+}
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow"
-      Principal = { Federated = local.github_oidc_provider_arn }
-      Action    = "sts:AssumeRoleWithWebIdentity"
-      Condition = {
-        StringEquals = {
-          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          "token.actions.githubusercontent.com:sub" = "${local.github_oidc_sub_prefix}:ref:refs/heads/main"
-        }
-      }
-    }]
-  })
+moved {
+  from = aws_iam_role.gha_apply
+  to   = module.cicd.aws_iam_role.apply
 }
 
 # -----------------------------------------------
@@ -210,12 +188,12 @@ resource "aws_iam_policy" "gha_read" {
 }
 
 resource "aws_iam_role_policy_attachment" "gha_plan_read" {
-  role       = aws_iam_role.gha_plan.name
+  role       = module.cicd.plan_role_name
   policy_arn = aws_iam_policy.gha_read.arn
 }
 
 resource "aws_iam_role_policy_attachment" "gha_apply_read" {
-  role       = aws_iam_role.gha_apply.name
+  role       = module.cicd.apply_role_name
   policy_arn = aws_iam_policy.gha_read.arn
 }
 
@@ -327,9 +305,9 @@ resource "aws_iam_policy" "gha_write" {
         }
       },
       {
-        Sid    = "EventBridgeWrite"
-        Effect = "Allow"
-        Action = ["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets", "events:TagResource", "events:UntagResource"]
+        Sid      = "EventBridgeWrite"
+        Effect   = "Allow"
+        Action   = ["events:PutRule", "events:DeleteRule", "events:PutTargets", "events:RemoveTargets", "events:TagResource", "events:UntagResource"]
         Resource = "arn:aws:events:us-east-1:${data.aws_caller_identity.current.account_id}:rule/${local.name_prefix}-*"
       },
       {
@@ -346,6 +324,6 @@ resource "aws_iam_policy" "gha_write" {
 }
 
 resource "aws_iam_role_policy_attachment" "gha_apply_write" {
-  role       = aws_iam_role.gha_apply.name
+  role       = module.cicd.apply_role_name
   policy_arn = aws_iam_policy.gha_write.arn
 }
