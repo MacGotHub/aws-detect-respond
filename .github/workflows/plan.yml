@@ -21,6 +21,11 @@ concurrency:
 jobs:
   plan:
     runs-on: ubuntu-latest
+    env:
+      # OpenTofu reads this automatically to authenticate to the HCP
+      # Terraform private module registry (app.terraform.io) during
+      # `tofu init` — the oidc-cicd module is sourced from there.
+      TF_TOKEN_app_terraform_io: ${{ secrets.TF_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
