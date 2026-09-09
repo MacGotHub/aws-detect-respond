@@ -26,7 +26,7 @@ module "cicd" {
   # SHA; it has no notion of registry version pinning, which is the
   # equivalent guarantee here.
   source  = "app.terraform.io/macgothub/oidc-cicd/aws"
-  version = "~> 0.2.0"
+  version = "~> 0.3.0"
 
   name_prefix = local.name_prefix
 
