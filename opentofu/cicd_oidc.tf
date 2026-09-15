@@ -363,13 +363,16 @@ resource "aws_iam_role_policy_attachment" "gha_apply_write" {
 # Live-confirmed in both sibling repos (satellite-tracker, orbital-watch):
 # a brand-new action added to this policy (here, sns:CreateTopic against a
 # new topic ARN and every cloudwatch:PutMetricAlarm-family action) can
-# still AccessDenied about a second after the policy update itself reports
-# success — IAM policy attachment is eventually consistent.
-# module.abuse_alarm depends_on this so its resources wait out that gap
-# instead of racing it.
+# still AccessDenied after the policy update itself reports success — IAM
+# policy attachment is eventually consistent. module.abuse_alarm
+# depends_on this so its resources wait out that gap instead of racing
+# it. Live-confirmed 10s wasn't always enough (this exact resource still
+# AccessDenied'd once after a 10s wait, succeeding only on a manual
+# retry) — 20s to match orbital-watch's own canary IAM wait, the more
+# generous of this account's two prior values for this same class of gap.
 resource "time_sleep" "wait_for_abuse_alarm_iam" {
   depends_on      = [aws_iam_role_policy_attachment.gha_apply_write]
-  create_duration = "10s"
+  create_duration = "20s"
 
   triggers = {
     policy = aws_iam_policy.gha_write.policy
