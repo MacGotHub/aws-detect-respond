@@ -246,11 +246,28 @@ and `aws lambda invoke` with a synthetic GuardDuty-Finding-shaped payload
 against the real deployed `detect-respond-alert` function returned
 `{"published": true}`.
 
-**Still outstanding:** no email subscription on the SNS topic yet (owner
-task, out-of-band, same pattern as `satellite-tracker`'s `alerts.tf`:
-`aws sns subscribe --topic-arn <alerts_topic_arn output> --protocol email
---notification-endpoint <address>`) — until that's added, alerts publish
-successfully but have nowhere to actually land.
+**Fixed 2026-09-15:** the SNS subscription above was still missing three
+weeks after this Phase 1/2 note was written — `aws
+sns list-subscriptions-by-topic` on `detect-respond-alerts` came back
+completely empty, meaning every GuardDuty/CloudTrail finding since
+2026-08-24 had been publishing successfully and landing nowhere. Found
+while working the `abuse-alarm` adoption task below; fixed by
+subscribing `drmcwilliams13@gmail.com` (pending email confirmation as of
+this note).
+
+**`abuse-alarm` adopted** (`opentofu/abuse_alarm.tf`) — this repo's first
+CloudWatch alarm. Not a cost guardrail (this project has no meaningful
+cost surface — event-driven only, see "What NOT to Do" below); it's a
+flood/feedback-loop sanity check on `detect-respond-alert`'s invocation
+count, threshold set from its real 14-day baseline (9 total invocations,
+never more than 1/hour). Own dedicated unencrypted SNS topic
+(`detect-respond-abuse-alarms`) rather than sharing the existing
+`alerts` topic, which is `alias/aws/sns`-encrypted — CloudWatch alarms
+can't publish through that key (same bug orbital-watch hit and fixed in
+its own PR #42). `cicd_oidc.tf` gained its first-ever
+`cloudwatch:*`/second-topic `sns:*` grants plus a `time_sleep` for the
+IAM-propagation gap that tripped up both sibling repos' own first attempt
+at this same module.
 
 ### Owner Prerequisites (not build tasks)
 - GitHub repo `MacGotHub/aws-detect-respond` — done, created 2026-08-23

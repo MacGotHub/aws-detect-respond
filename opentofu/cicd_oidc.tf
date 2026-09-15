@@ -144,10 +144,24 @@ resource "aws_iam_policy" "gha_read" {
         Resource = aws_s3_bucket.cloudtrail.arn
       },
       {
-        Sid      = "SnsRead"
+        Sid    = "SnsRead"
+        Effect = "Allow"
+        Action = ["sns:GetTopicAttributes", "sns:ListTagsForResource", "sns:ListSubscriptionsByTopic"]
+        Resource = [
+          aws_sns_topic.alerts.arn,
+          "arn:aws:sns:us-east-1:${data.aws_caller_identity.current.account_id}:${local.name_prefix}-abuse-alarms",
+        ]
+      },
+      {
+        # DescribeAlarms/ListTagsForResource don't support resource-level
+        # scoping — same class of AWS API limitation as
+        # cloudtrail:DescribeTrails elsewhere in this file, confirmed live
+        # in orbital-watch/satellite-tracker (same account) for this exact
+        # abuse-alarm module.
+        Sid      = "CloudWatchAlarmRead"
         Effect   = "Allow"
-        Action   = ["sns:GetTopicAttributes", "sns:ListTagsForResource", "sns:ListSubscriptionsByTopic"]
-        Resource = aws_sns_topic.alerts.arn
+        Action   = ["cloudwatch:DescribeAlarms", "cloudwatch:ListTagsForResource"]
+        Resource = "*"
       },
       {
         Sid      = "LambdaRead"
@@ -260,10 +274,24 @@ resource "aws_iam_policy" "gha_write" {
         Resource = aws_s3_bucket.cloudtrail.arn
       },
       {
-        Sid      = "SnsWrite"
+        Sid    = "SnsWrite"
+        Effect = "Allow"
+        Action = ["sns:CreateTopic", "sns:DeleteTopic", "sns:SetTopicAttributes", "sns:TagResource", "sns:UntagResource"]
+        Resource = [
+          aws_sns_topic.alerts.arn,
+          "arn:aws:sns:us-east-1:${data.aws_caller_identity.current.account_id}:${local.name_prefix}-abuse-alarms",
+        ]
+      },
+      {
+        # PutMetricAlarm/DeleteAlarms/TagResource/UntagResource grouped
+        # with Resource "*" to match orbital-watch's and satellite-tracker's
+        # own proven-live precedent for this exact module — not narrowed
+        # further to avoid rediscovering the same AccessDenied gaps those
+        # repos already found the hard way.
+        Sid      = "CloudWatchAlarmWrite"
         Effect   = "Allow"
-        Action   = ["sns:CreateTopic", "sns:DeleteTopic", "sns:SetTopicAttributes", "sns:TagResource", "sns:UntagResource"]
-        Resource = aws_sns_topic.alerts.arn
+        Action   = ["cloudwatch:PutMetricAlarm", "cloudwatch:DeleteAlarms", "cloudwatch:TagResource", "cloudwatch:UntagResource"]
+        Resource = "*"
       },
       {
         Sid    = "LambdaWrite"
@@ -330,4 +358,20 @@ resource "aws_iam_policy" "gha_write" {
 resource "aws_iam_role_policy_attachment" "gha_apply_write" {
   role       = module.cicd.apply_role_name
   policy_arn = aws_iam_policy.gha_write.arn
+}
+
+# Live-confirmed in both sibling repos (satellite-tracker, orbital-watch):
+# a brand-new action added to this policy (here, sns:CreateTopic against a
+# new topic ARN and every cloudwatch:PutMetricAlarm-family action) can
+# still AccessDenied about a second after the policy update itself reports
+# success — IAM policy attachment is eventually consistent.
+# module.abuse_alarm depends_on this so its resources wait out that gap
+# instead of racing it.
+resource "time_sleep" "wait_for_abuse_alarm_iam" {
+  depends_on      = [aws_iam_role_policy_attachment.gha_apply_write]
+  create_duration = "10s"
+
+  triggers = {
+    policy = aws_iam_policy.gha_write.policy
+  }
 }
